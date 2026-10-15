@@ -1,6 +1,31 @@
+import 'package:firebase_auth/firebase_auth.dart';
+import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/material.dart';
 
-void main() {
+import 'firebase_options.dart';
+
+bool _firebaseIsConfigured() {
+  final options = DefaultFirebaseOptions.currentPlatform;
+  return !options.apiKey.startsWith('YOUR_') &&
+      !options.projectId.startsWith('YOUR_');
+}
+
+Future<void> _ensureFirebaseInitialized() async {
+  if (!_firebaseIsConfigured()) {
+    return;
+  }
+
+  if (Firebase.apps.isEmpty) {
+    await Firebase.initializeApp(
+      options: DefaultFirebaseOptions.currentPlatform,
+    );
+  }
+}
+
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  await _ensureFirebaseInitialized();
+
   runApp(const RookieFoxApp());
 }
 
@@ -25,7 +50,58 @@ class RookieFoxApp extends StatelessWidget {
           ),
         ),
       ),
-      home: const LoginScreen(),
+      home: const AuthGate(),
+    );
+  }
+}
+
+class AuthGate extends StatelessWidget {
+  const AuthGate({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    if (!_firebaseIsConfigured()) {
+      return const LoginScreen();
+    }
+
+    return FutureBuilder<void>(
+      future: _ensureFirebaseInitialized(),
+      builder: (context, snapshot) {
+        if (snapshot.connectionState == ConnectionState.waiting) {
+          return const Scaffold(
+            body: Center(
+              child: CircularProgressIndicator(),
+            ),
+          );
+        }
+
+        if (snapshot.hasError) {
+          return Scaffold(
+            body: Center(
+              child: Text('Erro ao inicializar Firebase: ${snapshot.error}'),
+            ),
+          );
+        }
+
+        return StreamBuilder<User?>(
+          stream: FirebaseAuth.instance.authStateChanges(),
+          builder: (context, userSnapshot) {
+            if (userSnapshot.connectionState == ConnectionState.waiting) {
+              return const Scaffold(
+                body: Center(
+                  child: CircularProgressIndicator(),
+                ),
+              );
+            }
+
+            if (userSnapshot.hasData && userSnapshot.data != null) {
+              return const HomeScreen();
+            }
+
+            return const LoginScreen();
+          },
+        );
+      },
     );
   }
 }
@@ -50,8 +126,35 @@ class _LoginScreenState extends State<LoginScreen> {
     super.dispose();
   }
 
-  void _login() {
-    if (_formKey.currentState!.validate()) {
+  Future<void> _login() async {
+    if (!_formKey.currentState!.validate()) {
+      return;
+    }
+
+    if (!_firebaseIsConfigured()) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Configure o Firebase antes de usar o login.'),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+      return;
+    }
+
+    final email = _emailController.text.trim();
+    final password = _passwordController.text.trim();
+
+    try {
+      await FirebaseAuth.instance.signInWithEmailAndPassword(
+        email: email,
+        password: password,
+      );
+
+      if (!mounted) {
+        return;
+      }
+
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
           content: Text('Login realizado com sucesso!'),
@@ -61,8 +164,27 @@ class _LoginScreenState extends State<LoginScreen> {
 
       Navigator.pushAndRemoveUntil(
         context,
-        MaterialPageRoute(builder: (context) => const HomeScreen()),
+        MaterialPageRoute(builder: (_) => const HomeScreen()),
         (route) => false,
+      );
+    } on FirebaseAuthException catch (e) {
+      if (!mounted) {
+        return;
+      }
+
+      final message = switch (e.code) {
+        'user-not-found' => 'Nenhum usuário encontrado com este e-mail.',
+        'wrong-password' => 'Senha incorreta. Tente novamente.',
+        'invalid-email' => 'E-mail inválido.',
+        'user-disabled' => 'Esta conta foi desativada.',
+        _ => 'Não foi possível fazer login. Tente novamente.',
+      };
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(message),
+          behavior: SnackBarBehavior.floating,
+        ),
       );
     }
   }
@@ -213,8 +335,35 @@ class _CadastroScreenState extends State<CadastroScreen> {
     super.dispose();
   }
 
-  void _cadastrar() {
-    if (_formKey.currentState!.validate()) {
+  Future<void> _cadastrar() async {
+    if (!_formKey.currentState!.validate()) {
+      return;
+    }
+
+    if (!_firebaseIsConfigured()) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Configure o Firebase antes de criar a conta.'),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+      return;
+    }
+
+    final email = _emailController.text.trim();
+    final password = _senhaController.text.trim();
+
+    try {
+      await FirebaseAuth.instance.createUserWithEmailAndPassword(
+        email: email,
+        password: password,
+      );
+
+      if (!mounted) {
+        return;
+      }
+
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
           content: Text('Cadastro realizado com sucesso!'),
@@ -224,8 +373,26 @@ class _CadastroScreenState extends State<CadastroScreen> {
 
       Navigator.pushAndRemoveUntil(
         context,
-        MaterialPageRoute(builder: (context) => const HomeScreen()),
+        MaterialPageRoute(builder: (_) => const HomeScreen()),
         (route) => false,
+      );
+    } on FirebaseAuthException catch (e) {
+      if (!mounted) {
+        return;
+      }
+
+      final message = switch (e.code) {
+        'email-already-in-use' => 'Já existe uma conta com este e-mail.',
+        'invalid-email' => 'E-mail inválido.',
+        'weak-password' => 'A senha deve ser mais forte.',
+        _ => 'Não foi possível concluir o cadastro. Tente novamente.',
+      };
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(message),
+          behavior: SnackBarBehavior.floating,
+        ),
       );
     }
   }
@@ -367,8 +534,95 @@ class _CadastroScreenState extends State<CadastroScreen> {
   }
 }
 
-class HomeScreen extends StatelessWidget {
+class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
+
+  @override
+  State<HomeScreen> createState() => _HomeScreenState();
+}
+
+class _HomeScreenState extends State<HomeScreen> {
+  Future<void> _resetPassword() async {
+    if (!_firebaseIsConfigured()) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Configure o Firebase para redefinir a senha.'),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+      return;
+    }
+
+    final user = FirebaseAuth.instance.currentUser;
+    final email = user?.email;
+
+    if (email == null || email.isEmpty) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Não foi possível localizar o e-mail desta conta.'),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+      return;
+    }
+
+    try {
+      await FirebaseAuth.instance.sendPasswordResetEmail(email: email);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('E-mail de redefinição enviado para $email.'),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    } on FirebaseAuthException catch (e) {
+      if (!mounted) return;
+      final message = switch (e.code) {
+        'user-not-found' => 'Nenhuma conta encontrada para este e-mail.',
+        'invalid-email' => 'E-mail inválido.',
+        _ => 'Não foi possível enviar a redefinição de senha.',
+      };
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(message),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    }
+  }
+
+  Future<void> _signOut() async {
+    if (!_firebaseIsConfigured()) {
+      if (!mounted) return;
+      Navigator.pushAndRemoveUntil(
+        context,
+        MaterialPageRoute(builder: (_) => const LoginScreen()),
+        (route) => false,
+      );
+      return;
+    }
+
+    try {
+      await FirebaseAuth.instance.signOut();
+      if (!mounted) return;
+      Navigator.pushAndRemoveUntil(
+        context,
+        MaterialPageRoute(builder: (_) => const LoginScreen()),
+        (route) => false,
+      );
+    } on FirebaseAuthException catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Erro ao sair: ${e.message ?? 'Tente novamente.'}'),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -394,6 +648,11 @@ class HomeScreen extends StatelessWidget {
       appBar: AppBar(
         title: const Text('Rookie Fox Dev Hub'),
         actions: [
+          IconButton(
+            tooltip: 'Redefinir senha',
+            icon: const Icon(Icons.lock_reset),
+            onPressed: _resetPassword,
+          ),
           IconButton(
             icon: const Icon(Icons.notifications_none),
             onPressed: () {},
@@ -433,7 +692,7 @@ class HomeScreen extends StatelessWidget {
               Expanded(
                 child: ListView.separated(
                   itemCount: projetos.length,
-                  separatorBuilder: (_, __) => const SizedBox(height: 12),
+                  separatorBuilder: (context, _) => const SizedBox(height: 12),
                   itemBuilder: (context, index) {
                     final item = projetos[index];
 
@@ -467,15 +726,7 @@ class HomeScreen extends StatelessWidget {
               SizedBox(
                 width: double.infinity,
                 child: ElevatedButton.icon(
-                  onPressed: () {
-                    Navigator.pushAndRemoveUntil(
-                      context,
-                      MaterialPageRoute(
-                        builder: (context) => const LoginScreen(),
-                      ),
-                      (route) => false,
-                    );
-                  },
+                  onPressed: _signOut,
                   icon: const Icon(Icons.logout),
                   label: const Text('Sair'),
                   style: ElevatedButton.styleFrom(
